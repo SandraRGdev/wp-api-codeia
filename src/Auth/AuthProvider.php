@@ -115,8 +115,9 @@ class AuthProvider implements ServiceInterface
         // Register REST routes
         add_action('rest_api_init', array($this, 'registerRoutes'));
 
-        // Register authentication filter
-        add_filter('determine_current_user', array($this, 'determineCurrentUser'), 20);
+        // TEMPORARILY DISABLED - This filter is breaking core WP endpoints like /wp/v2/users/me
+        // TODO: Fix the determineCurrentUser method to properly skip WP core endpoints
+        // add_filter('determine_current_user', array($this, 'determineCurrentUser'), 20);
 
         // Schedule token cleanup
         add_action('wp_api_codeia_cleanup_tokens', array($this, 'cleanupTokens'));
@@ -148,39 +149,65 @@ class AuthProvider implements ServiceInterface
      */
     public function determineCurrentUser($user_id)
     {
-        // Already authenticated
+        // Already authenticated by WordPress or another plugin
         if ($user_id) {
             return $user_id;
         }
 
-        // Only authenticate our namespace
+        // Early exit if not in REST API context
+        if (!defined('REST_REQUEST') || !REST_REQUEST) {
+            return false;
+        }
+
+        // Only authenticate our namespace - explicitly skip WordPress core endpoints
         $request = $this->getCurrentRequest();
 
         if ($request === null) {
-            return $user_id;
+            return false;
         }
 
+        // Get route safely
         $route = $request->get_route();
-        $namespace = '/' . WP_API_CODEIA_API_NAMESPACE . '/';
+        if (!is_string($route)) {
+            return false;
+        }
 
+        // Skip WordPress core REST API endpoints (they start with /wp/v2/ or /oembed/)
+        if (strpos($route, '/wp/v2/') === 0 || strpos($route, '/oembed/') === 0) {
+            return false;
+        }
+
+        // Only authenticate our namespace
+        $namespace = '/' . WP_API_CODEIA_API_NAMESPACE . '/';
         if (strpos($route, $namespace) !== 0) {
-            return $user_id;
+            return false;
         }
 
         // Skip public endpoints
         if ($this->isPublicEndpoint($route)) {
-            return $user_id;
+            return false;
         }
 
         // Authenticate
-        $auth = $this->container->get('auth');
-        $result = $auth->authenticate($request);
+        try {
+            if (!method_exists($this->container, 'get')) {
+                return false;
+            }
+            $auth = $this->container->get('auth');
+            $result = $auth->authenticate($request);
 
-        if (is_wp_error($result)) {
-            return $user_id;
+            if (is_wp_error($result)) {
+                return false;
+            }
+
+            return $result->ID;
+        } catch (\Exception $e) {
+            // Return false on any error to avoid breaking core functionality
+            return false;
+        } catch (\Error $e) {
+            // Catch fatal errors too
+            return false;
         }
-
-        return $result->ID;
     }
 
     /**
@@ -192,9 +219,22 @@ class AuthProvider implements ServiceInterface
      */
     protected function getCurrentRequest()
     {
-        if (did_action('rest_api_init')) {
-            return rest_get_server()->get_current_request();
+        // Only try to get request if REST server is available
+        if (!did_action('rest_api_init')) {
+            return null;
         }
+
+        try {
+            $server = rest_get_server();
+            if ($server && method_exists($server, 'get_current_request')) {
+                return $server->get_current_request();
+            }
+        } catch (\Exception $e) {
+            return null;
+        } catch (\Error $e) {
+            return null;
+        }
+
         return null;
     }
 

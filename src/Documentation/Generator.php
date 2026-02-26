@@ -114,6 +114,11 @@ class Generator implements ServiceInterface
     {
         $cacheKey = 'codeia_openapi_spec';
 
+        // Clear cache if refresh is requested
+        if ($refresh) {
+            $this->cache->delete($cacheKey);
+        }
+
         if (!$refresh) {
             $cached = $this->cache->get($cacheKey);
             if ($cached !== null) {
@@ -121,20 +126,51 @@ class Generator implements ServiceInterface
             }
         }
 
-        $schema = $this->detector->detect($refresh);
+        try {
+            $schema = $this->detector->detect($refresh);
 
-        $spec = array(
-            'openapi' => $this->openapiVersion,
-            'info' => $this->getInfo(),
-            'servers' => $this->getServers(),
-            'paths' => $this->generatePaths($schema),
-            'components' => $this->generateComponents($schema),
-            'tags' => $this->generateTags($schema),
-        );
+            // Ensure schema has required keys
+            if (!isset($schema['post_types']) || !is_array($schema['post_types'])) {
+                error_log('WP API Codeia: Schema post_types missing or invalid');
+                $schema['post_types'] = array();
+            }
 
-        $this->cache->set($cacheKey, $spec, 3600);
+            if (!isset($schema['taxonomies']) || !is_array($schema['taxonomies'])) {
+                $schema['taxonomies'] = array();
+            }
 
-        return $spec;
+            $spec = array(
+                'openapi' => $this->openapiVersion,
+                'info' => $this->getInfo(),
+                'servers' => $this->getServers(),
+                'paths' => $this->generatePaths($schema),
+                'components' => $this->generateComponents($schema),
+                'tags' => $this->generateTags($schema),
+            );
+
+            $this->cache->set($cacheKey, $spec, 3600);
+
+            return $spec;
+        } catch (\Exception $e) {
+            error_log('WP API Codeia Error: ' . $e->getMessage());
+
+            // Return minimal spec on error
+            return array(
+                'openapi' => $this->openapiVersion,
+                'info' => $this->getInfo(),
+                'servers' => $this->getServers(),
+                'paths' => array(
+                    '/v1/status' => array(
+                        'get' => array(
+                            'summary' => 'API Status',
+                            'responses' => array('200' => array('description' => 'OK')),
+                        ),
+                    ),
+                ),
+                'components' => array(),
+                'tags' => array(),
+            );
+        }
     }
 
     /**
@@ -348,12 +384,16 @@ class Generator implements ServiceInterface
         $base = $info['rest_base'] ?: $postType;
         $paths = array();
 
+        // Safely get labels with fallbacks
+        $name = isset($info['labels']['name']) ? $info['labels']['name'] : $postType;
+        $singular = isset($info['labels']['singular_name']) ? $info['labels']['singular_name'] : $postType;
+
         // Collection endpoints
         $paths["/v1/{$base}"] = array(
             'get' => array(
-                'summary' => sprintf(__('List %s', 'wp-api-codeia'), $info['label']['name']),
-                'description' => sprintf(__('Retrieve list of %s', 'wp-api-codeia'), strtolower($info['label']['name'])),
-                'tags' => array($info['label']['name']),
+                'summary' => sprintf(__('List %s', 'wp-api-codeia'), $name),
+                'description' => sprintf(__('Retrieve list of %s', 'wp-api-codeia'), strtolower($name)),
+                'tags' => array($name),
                 'parameters' => $this->getCollectionParameters(),
                 'responses' => array(
                     '200' => array('$ref' => '#/components/responses/Collection'),
@@ -362,9 +402,9 @@ class Generator implements ServiceInterface
                 ),
             ),
             'post' => array(
-                'summary' => sprintf(__('Create %s', 'wp-api-codeia'), $info['label']['singular_name']),
-                'description' => sprintf(__('Create a new %s', 'wp-api-codeia'), strtolower($info['label']['singular_name'])),
-                'tags' => array($info['label']['name']),
+                'summary' => sprintf(__('Create %s', 'wp-api-codeia'), $singular),
+                'description' => sprintf(__('Create a new %s', 'wp-api-codeia'), strtolower($singular)),
+                'tags' => array($name),
                 'security' => array(array('bearerAuth' => array())),
                 'requestBody' => array(
                     'required' => true,
@@ -386,9 +426,9 @@ class Generator implements ServiceInterface
         // Single item endpoints
         $paths["/v1/{$base}/{id}"] = array(
             'get' => array(
-                'summary' => sprintf(__('Get %s', 'wp-api-codeia'), $info['label']['singular_name']),
-                'description' => sprintf(__('Retrieve a single %s', 'wp-api-codeia'), strtolower($info['label']['singular_name'])),
-                'tags' => array($info['label']['name']),
+                'summary' => sprintf(__('Get %s', 'wp-api-codeia'), $singular),
+                'description' => sprintf(__('Retrieve a single %s', 'wp-api-codeia'), strtolower($info['labels']['singular_name'])),
+                'tags' => array($info['labels']['name']),
                 'parameters' => array(
                     array(
                         'name' => 'id',
@@ -404,9 +444,9 @@ class Generator implements ServiceInterface
                 ),
             ),
             'put' => array(
-                'summary' => sprintf(__('Update %s', 'wp-api-codeia'), $info['label']['singular_name']),
-                'description' => sprintf(__('Update a single %s', 'wp-api-codeia'), strtolower($info['label']['singular_name'])),
-                'tags' => array($info['label']['name']),
+                'summary' => sprintf(__('Update %s', 'wp-api-codeia'), $singular),
+                'description' => sprintf(__('Update a single %s', 'wp-api-codeia'), strtolower($singular)),
+                'tags' => array($name),
                 'security' => array(array('bearerAuth' => array())),
                 'parameters' => array(
                     array(
@@ -432,9 +472,9 @@ class Generator implements ServiceInterface
                 ),
             ),
             'delete' => array(
-                'summary' => sprintf(__('Delete %s', 'wp-api-codeia'), $info['label']['singular_name']),
-                'description' => sprintf(__('Delete a single %s', 'wp-api-codeia'), strtolower($info['label']['singular_name'])),
-                'tags' => array($info['label']['name']),
+                'summary' => sprintf(__('Delete %s', 'wp-api-codeia'), $singular),
+                'description' => sprintf(__('Delete a single %s', 'wp-api-codeia'), strtolower($singular)),
+                'tags' => array($name),
                 'security' => array(array('bearerAuth' => array())),
                 'parameters' => array(
                     array(
@@ -476,18 +516,22 @@ class Generator implements ServiceInterface
         $base = $info['rest_base'] ?: $taxonomy;
         $paths = array();
 
+        // Safely get labels with fallbacks
+        $name = isset($info['labels']['name']) ? $info['labels']['name'] : $taxonomy;
+        $singular = isset($info['labels']['singular_name']) ? $info['labels']['singular_name'] : $taxonomy;
+
         $paths["/v1/{$base}"] = array(
             'get' => array(
-                'summary' => sprintf(__('List %s', 'wp-api-codeia'), $info['label']['name']),
-                'tags' => array($info['label']['name']),
+                'summary' => sprintf(__('List %s', 'wp-api-codeia'), $name),
+                'tags' => array($name),
                 'parameters' => $this->getCollectionParameters(),
                 'responses' => array(
                     '200' => array('$ref' => '#/components/responses/Collection'),
                 ),
             ),
             'post' => array(
-                'summary' => sprintf(__('Create %s', 'wp-api-codeia'), $info['label']['singular_name']),
-                'tags' => array($info['label']['name']),
+                'summary' => sprintf(__('Create %s', 'wp-api-codeia'), $singular),
+                'tags' => array($name),
                 'security' => array(array('bearerAuth' => array())),
                 'requestBody' => array(
                     'required' => true,
@@ -507,8 +551,8 @@ class Generator implements ServiceInterface
 
         $paths["/v1/{$base}/{id}"] = array(
             'get' => array(
-                'summary' => sprintf(__('Get %s', 'wp-api-codeia'), $info['label']['singular_name']),
-                'tags' => array($info['label']['name']),
+                'summary' => sprintf(__('Get %s', 'wp-api-codeia'), $singular),
+                'tags' => array($name),
                 'parameters' => array(
                     array(
                         'name' => 'id',
@@ -523,8 +567,8 @@ class Generator implements ServiceInterface
                 ),
             ),
             'put' => array(
-                'summary' => sprintf(__('Update %s', 'wp-api-codeia'), $info['label']['singular_name']),
-                'tags' => array($info['label']['name']),
+                'summary' => sprintf(__('Update %s', 'wp-api-codeia'), $singular),
+                'tags' => array($name),
                 'security' => array(array('bearerAuth' => array())),
                 'responses' => array(
                     '200' => array('$ref' => '#/components/responses/Success'),
@@ -532,8 +576,8 @@ class Generator implements ServiceInterface
                 ),
             ),
             'delete' => array(
-                'summary' => sprintf(__('Delete %s', 'wp-api-codeia'), $info['label']['singular_name']),
-                'tags' => array($info['label']['name']),
+                'summary' => sprintf(__('Delete %s', 'wp-api-codeia'), $singular),
+                'tags' => array($name),
                 'security' => array(array('bearerAuth' => array())),
                 'responses' => array(
                     '200' => array('$ref' => '#/components/responses/Deleted'),
@@ -899,18 +943,22 @@ class Generator implements ServiceInterface
 
         foreach ($schema['post_types'] as $postType => $info) {
             if ($info['api_visible']) {
+                $name = isset($info['labels']['name']) ? $info['labels']['name'] : $postType;
+                $description = isset($info['description']) ? $info['description'] : sprintf(__('%s endpoints', 'wp-api-codeia'), $name);
                 $tags[] = array(
-                    'name' => $info['label']['name'],
-                    'description' => $info['description'],
+                    'name' => $name,
+                    'description' => $description,
                 );
             }
         }
 
         foreach ($schema['taxonomies'] as $taxonomy => $info) {
             if ($info['api_visible']) {
+                $name = isset($info['labels']['name']) ? $info['labels']['name'] : $taxonomy;
+                $description = isset($info['description']) ? $info['description'] : sprintf(__('%s endpoints', 'wp-api-codeia'), $name);
                 $tags[] = array(
-                    'name' => $info['label']['name'],
-                    'description' => $info['description'],
+                    'name' => $name,
+                    'description' => $description,
                 );
             }
         }

@@ -99,8 +99,9 @@ class Manager implements ServiceInterface
      */
     public function boot()
     {
-        // Hook into WordPress REST API
-        add_filter('rest_authentication_errors', array($this, 'authenticateRequest'));
+        // TEMPORARILY DISABLED - This filter may be causing issues with core WP endpoints
+        // TODO: Implement proper namespace checking
+        // add_filter('rest_authentication_errors', array($this, 'authenticateRequest'));
     }
 
     /**

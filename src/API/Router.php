@@ -11,6 +11,7 @@ use WP_API_Codeia\Core\Interfaces\ServiceInterface;
 use WP_API_Codeia\Core\Container;
 use WP_API_Codeia\Schema\Detector;
 use WP_API_Codeia\Utils\Logger\Logger;
+use WP_API_Codeia\Permissions\Middleware;
 
 // Exit if accessed directly.
 if (!defined('ABSPATH')) {
@@ -55,6 +56,15 @@ class Router implements ServiceInterface
     protected $logger;
 
     /**
+     * Middleware instance.
+     *
+     * @since 1.0.0
+     *
+     * @var Middleware
+     */
+    protected $middleware;
+
+    /**
      * Registered routes.
      *
      * @since 1.0.0
@@ -68,15 +78,17 @@ class Router implements ServiceInterface
      *
      * @since 1.0.0
      *
-     * @param Container $container DI Container.
-     * @param Detector  $detector  Schema Detector.
-     * @param Logger    $logger    Logger instance.
+     * @param Container  $container  DI Container.
+     * @param Detector   $detector   Schema Detector.
+     * @param Logger     $logger     Logger instance.
+     * @param Middleware $middleware Middleware instance (optional).
      */
-    public function __construct(Container $container, Detector $detector, Logger $logger)
+    public function __construct(Container $container, Detector $detector, Logger $logger, Middleware $middleware = null)
     {
         $this->container = $container;
         $this->detector = $detector;
         $this->logger = $logger;
+        $this->middleware = $middleware;
     }
 
     /**
@@ -350,7 +362,7 @@ class Router implements ServiceInterface
     }
 
     /**
-     * Wrap callbacks to include context.
+     * Wrap callbacks to include context and middleware.
      *
      * @since 1.0.0
      *
@@ -362,15 +374,59 @@ class Router implements ServiceInterface
     {
         $args['context'] = $context;
 
-        foreach (array('callback', 'permission_callback') as $key) {
-            if (isset($args[$key]) && is_array($args[$key])) {
-                $args[$key] = function ($request) use ($args, $key, $context) {
-                    return call_user_func($args[$key], $request, $context);
-                };
-            }
+        // Wrap callback with rate limiting check
+        if (isset($args['callback']) && is_array($args['callback']) && $this->middleware) {
+            $originalCallback = $args['callback'];
+            $args['callback'] = function ($request) use ($originalCallback, $args, $context) {
+                // Check rate limit before executing callback
+                $userId = get_current_user_id();
+                $action = $this->getActionFromMethod($request->get_method());
+
+                $rateLimitCheck = $this->middleware->checkRateLimit($userId, $action);
+                if (is_wp_error($rateLimitCheck)) {
+                    return $rateLimitCheck;
+                }
+
+                return call_user_func($originalCallback, $request, $context);
+            };
+        } elseif (isset($args['callback']) && is_array($args['callback'])) {
+            // No middleware, just wrap with context
+            $originalCallback = $args['callback'];
+            $args['callback'] = function ($request) use ($originalCallback, $args, $context) {
+                return call_user_func($originalCallback, $request, $context);
+            };
+        }
+
+        // Wrap permission callback
+        if (isset($args['permission_callback']) && is_array($args['permission_callback'])) {
+            $originalPermission = $args['permission_callback'];
+            $args['permission_callback'] = function ($request) use ($originalPermission, $args, $context) {
+                return call_user_func($originalPermission, $request, $context);
+            };
         }
 
         return $args;
+    }
+
+    /**
+     * Get action from HTTP method.
+     *
+     * @since 1.0.0
+     *
+     * @param string $method HTTP method.
+     * @return string
+     */
+    protected function getActionFromMethod($method)
+    {
+        $actions = array(
+            'GET' => 'read',
+            'POST' => 'create',
+            'PUT' => 'update',
+            'PATCH' => 'update',
+            'DELETE' => 'delete',
+        );
+
+        return isset($actions[$method]) ? $actions[$method] : 'read';
     }
 
     /**
@@ -421,7 +477,7 @@ class Router implements ServiceInterface
      */
     protected function isPostTypeEnabled($postType)
     {
-        $enabled = wp_api_codeia_config('post_types.' . $postType . '.enabled', true);
+        $enabled = \wp_api_codeia_config('post_types.' . $postType . '.enabled', true);
 
         return apply_filters('wp_api_codeia_post_type_enabled', $enabled, $postType);
     }
@@ -436,7 +492,7 @@ class Router implements ServiceInterface
      */
     protected function isTaxonomyEnabled($taxonomy)
     {
-        $enabled = wp_api_codeia_config('taxonomies.' . $taxonomy . '.enabled', true);
+        $enabled = \wp_api_codeia_config('taxonomies.' . $taxonomy . '.enabled', true);
 
         return apply_filters('wp_api_codeia_taxonomy_enabled', $enabled, $taxonomy);
     }

@@ -71,6 +71,14 @@ class Page implements ServiceInterface
         add_action('wp_ajax_codeia_create_api_key', array($this, 'ajaxCreateApiKey'));
         add_action('wp_ajax_codeia_revoke_api_key', array($this, 'ajaxRevokeApiKey'));
         add_action('wp_ajax_codeia_list_api_keys', array($this, 'ajaxListApiKeys'));
+
+        // AJAX handlers for field configuration
+        add_action('wp_ajax_codeia_get_post_type_fields', array($this, 'ajaxGetPostTypeFields'));
+        add_action('wp_ajax_codeia_save_field_config', array($this, 'ajaxSaveFieldConfig'));
+
+        // Shortcodes for embedding documentation
+        add_shortcode('codeia_api_docs', array($this, 'shortcodeApiDocs'));
+        add_shortcode('codeia_api_redoc', array($this, 'shortcodeApiRedoc'));
     }
 
     /**
@@ -186,11 +194,122 @@ class Page implements ServiceInterface
      */
     public function registerSettings()
     {
-        register_setting($this->slug, 'codeia_api_enabled');
-        register_setting($this->slug, 'codeia_api_description');
-        register_setting($this->slug, 'codeia_cache_enabled');
-        register_setting($this->slug, 'codeia_jwt_access_ttl');
-        register_setting($this->slug, 'codeia_jwt_refresh_ttl');
+        // Register settings sections and fields
+        add_settings_section(
+            'codeia_general',
+            __('General Settings', 'wp-api-codeia'),
+            null,
+            'codeia_general_section'
+        );
+
+        add_settings_section(
+            'codeia_auth',
+            __('Authentication', 'wp-api-codeia'),
+            null,
+            'codeia_auth_section'
+        );
+
+        add_settings_section(
+            'codeia_rate_limit',
+            __('Rate Limiting', 'wp-api-codeia'),
+            null,
+            'codeia_rate_limit_section'
+        );
+
+        // General settings
+        register_setting($this->slug, 'wp_api_codeia_enabled_post_types', array(
+            'type' => 'array',
+            'sanitize_callback' => array($this, 'sanitizePostTypes'),
+        ));
+
+        // Auth settings
+        register_setting($this->slug, 'wp_api_codeia_auth_config', array(
+            'type' => 'array',
+            'sanitize_callback' => array($this, 'sanitizeAuthConfig'),
+        ));
+
+        // Rate limit settings
+        register_setting($this->slug, 'wp_api_codeia_rate_limit', array(
+            'type' => 'array',
+            'sanitize_callback' => array($this, 'sanitizeRateLimitConfig'),
+        ));
+    }
+
+    /**
+     * Sanitize post types array.
+     *
+     * @since 1.0.0
+     *
+     * @param array $postTypes Raw post types array.
+     * @return array Sanitized array.
+     */
+    public function sanitizePostTypes($postTypes)
+    {
+        if (!is_array($postTypes)) {
+            return array('post', 'page');
+        }
+
+        $validPostTypes = get_post_types(array('show_in_rest' => true));
+        return array_intersect($postTypes, $validPostTypes);
+    }
+
+    /**
+     * Sanitize auth config.
+     *
+     * @since 1.0.0
+     *
+     * @param array $config Raw config.
+     * @return array Sanitized config.
+     */
+    public function sanitizeAuthConfig($config)
+    {
+        if (!is_array($config)) {
+            return array(
+                'default' => 'api_key',
+                'jwt_access_ttl' => 3600,
+                'jwt_refresh_ttl' => 2592000,
+            );
+        }
+
+        $validMethods = array('public', 'api_key', 'jwt', 'any');
+        $config['default'] = isset($config['default']) && in_array($config['default'], $validMethods)
+            ? $config['default']
+            : 'api_key';
+
+        $config['jwt_access_ttl'] = isset($config['jwt_access_ttl'])
+            ? absint($config['jwt_access_ttl'])
+            : 3600;
+
+        $config['jwt_refresh_ttl'] = isset($config['jwt_refresh_ttl'])
+            ? absint($config['jwt_refresh_ttl'])
+            : 2592000;
+
+        return $config;
+    }
+
+    /**
+     * Sanitize rate limit config.
+     *
+     * @since 1.0.0
+     *
+     * @param array $config Raw config.
+     * @return array Sanitized config.
+     */
+    public function sanitizeRateLimitConfig($config)
+    {
+        if (!is_array($config)) {
+            return array(
+                'enabled' => false,
+                'requests_per_hour' => 1000,
+            );
+        }
+
+        $config['enabled'] = !empty($config['enabled']);
+        $config['requests_per_hour'] = isset($config['requests_per_hour'])
+            ? absint($config['requests_per_hour'])
+            : 1000;
+
+        return $config;
     }
 
     /**
@@ -639,6 +758,122 @@ class Page implements ServiceInterface
     }
 
     /**
+     * AJAX: Get fields for a post type.
+     *
+     * @since 1.0.0
+     *
+     * @return void
+     */
+    public function ajaxGetPostTypeFields()
+    {
+        // Verify nonce
+        if (!isset($_POST['nonce']) || !wp_verify_nonce($_POST['nonce'], 'codeia_get_fields')) {
+            wp_send_json_error(__('Security check failed.', 'wp-api-codeia'));
+        }
+
+        // Check permissions
+        if (!current_user_can('manage_options')) {
+            wp_send_json_error(__('You do not have permission.', 'wp-api-codeia'));
+        }
+
+        $postType = isset($_POST['post_type']) ? sanitize_text_field($_POST['post_type']) : '';
+
+        if (!$postType) {
+            wp_send_json_error(__('Invalid post type.', 'wp-api-codeia'));
+        }
+
+        // Get fields using the detector
+        if ($this->container && $this->container->has('detector')) {
+            $detector = $this->container->get('detector');
+            $fieldDetector = $detector->getFieldDetector();
+
+            if ($fieldDetector) {
+                // Get all fields as a flat array
+                $allFields = $fieldDetector->getAllFields($postType);
+                // Extract just the field names (keys)
+                $fieldNames = array_keys($allFields);
+
+                wp_send_json_success(array('fields' => $fieldNames));
+            }
+        }
+
+        // Fallback: get basic fields
+        $fields = $this->getPostTypeFields($postType);
+        wp_send_json_success(array('fields' => $fields));
+    }
+
+    /**
+     * AJAX: Save field configuration for a post type.
+     *
+     * @since 1.0.0
+     *
+     * @return void
+     */
+    public function ajaxSaveFieldConfig()
+    {
+        // Verify nonce
+        if (!isset($_POST['nonce']) || !wp_verify_nonce($_POST['nonce'], 'codeia_save_fields')) {
+            wp_send_json_error(__('Security check failed.', 'wp-api-codeia'));
+        }
+
+        // Check permissions
+        if (!current_user_can('manage_options')) {
+            wp_send_json_error(__('You do not have permission.', 'wp-api-codeia'));
+        }
+
+        $postType = isset($_POST['post_type']) ? sanitize_text_field($_POST['post_type']) : '';
+        $fields = isset($_POST['fields']) ? array_map('sanitize_text_field', (array) $_POST['fields']) : array();
+
+        if (!$postType) {
+            wp_send_json_error(__('Invalid post type.', 'wp-api-codeia'));
+        }
+
+        // Get existing config
+        $fieldConfig = get_option('wp_api_codeia_fields', array());
+        $fieldConfig[$postType] = $fields;
+
+        // Save
+        update_option('wp_api_codeia_fields', $fieldConfig);
+
+        // Clear field detector cache to ensure fresh data
+        if ($this->container && $this->container->has('detector')) {
+            $detector = $this->container->get('detector');
+            if (method_exists($detector, 'clearSchemaCache')) {
+                $detector->clearSchemaCache();
+            }
+        }
+
+        wp_send_json_success(array(
+            'message' => __('Field configuration saved.', 'wp-api-codeia'),
+            'saved' => $fields
+        ));
+    }
+
+    /**
+     * Get fields for a post type.
+     *
+     * @since 1.0.0
+     *
+     * @param string $postType Post type slug.
+     * @return array
+     */
+    protected function getPostTypeFields($postType)
+    {
+        $fields = array('title', 'content', 'excerpt', 'status', 'author', 'date', 'slug');
+
+        // Get meta fields
+        $metaKeys = get_registered_meta_keys($postType);
+
+        foreach ($metaKeys as $key => $args) {
+            if (isset($args['show_in_rest']) && $args['show_in_rest']) {
+                $fields[] = $key;
+            }
+        }
+
+        return $fields;
+    }
+
+    /**
      * Get template path.
      *
      * @since 1.0.0
@@ -655,5 +890,47 @@ class Page implements ServiceInterface
         }
 
         return WP_API_CODEIA_PLUGIN_DIR . '/templates/admin/' . $template;
+    }
+
+    /**
+     * Shortcode: Embed Swagger UI documentation.
+     *
+     * @since 1.0.0
+     *
+     * @param array $atts Shortcode attributes.
+     * @return string
+     */
+    public function shortcodeApiDocs($atts)
+    {
+        $atts = shortcode_atts(array(
+            'height' => '800px',
+        ), $atts);
+
+        $specUrl = rest_url(WP_API_CODEIA_API_NAMESPACE . '/v1/docs');
+
+        ob_start();
+        include WP_API_CODEIA_PLUGIN_DIR . '/templates/swagger.php';
+        return ob_get_clean();
+    }
+
+    /**
+     * Shortcode: Embed ReDoc documentation.
+     *
+     * @since 1.0.0
+     *
+     * @param array $atts Shortcode attributes.
+     * @return string
+     */
+    public function shortcodeApiRedoc($atts)
+    {
+        $atts = shortcode_atts(array(
+            'height' => '800px',
+        ), $atts);
+
+        $specUrl = rest_url(WP_API_CODEIA_API_NAMESPACE . '/v1/docs');
+
+        ob_start();
+        include WP_API_CODEIA_PLUGIN_DIR . '/templates/redoc.php';
+        return ob_get_clean();
     }
 }

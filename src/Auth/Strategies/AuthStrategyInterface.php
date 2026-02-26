@@ -7,8 +7,6 @@
 
 namespace WP_API_Codeia\Auth\Strategies;
 
-use WP_API_Codeia\Core\Interfaces\AuthStrategyInterface as BaseAuthStrategyInterface;
-
 // Exit if accessed directly.
 if (!defined('ABSPATH')) {
     exit;
@@ -17,11 +15,15 @@ if (!defined('ABSPATH')) {
 /**
  * Authentication Strategy Interface.
  *
- * Defines the contract for authentication strategies.
+ * Defines the contract for authentication strategies that work
+ * with pre-extracted credentials arrays.
+ *
+ * This is separate from the REST-specific authentication interface
+ * which works with WP_REST_Request objects.
  *
  * @since 1.0.0
  */
-interface AuthStrategyInterface extends BaseAuthStrategyInterface
+interface AuthStrategyInterface
 {
     /**
      * Check if strategy supports the credentials.

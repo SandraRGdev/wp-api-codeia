@@ -93,6 +93,11 @@ class Detector implements ServiceInterface
     {
         $this->cache = $cache;
         $this->logger = $logger;
+
+        // Initialize sub-detectors immediately to prevent null pointer errors
+        $this->postTypeDetector = new PostTypeDetector($cache, $logger);
+        $this->fieldDetector = new FieldDetector($cache, $logger);
+        $this->taxonomyDetector = new TaxonomyDetector($cache, $logger);
     }
 
     /**
@@ -104,10 +109,8 @@ class Detector implements ServiceInterface
      */
     public function register()
     {
-        // Initialize detectors
-        $this->postTypeDetector = new PostTypeDetector($this->cache, $this->logger);
-        $this->fieldDetector = new FieldDetector($this->cache, $this->logger);
-        $this->taxonomyDetector = new TaxonomyDetector($this->cache, $this->logger);
+        // Sub-detectors are now initialized in constructor
+        // This method is kept for interface compatibility
     }
 
     /**

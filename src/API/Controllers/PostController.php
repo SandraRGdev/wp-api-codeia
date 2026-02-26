@@ -69,6 +69,54 @@ class PostController
     }
 
     /**
+     * Get enabled fields for a post type.
+     *
+     * @since 1.0.0
+     *
+     * @param string $postType Post type slug.
+     * @return array|null
+     */
+    protected function getEnabledFields($postType)
+    {
+        $fieldConfig = get_option('wp_api_codeia_fields', array());
+
+        if (isset($fieldConfig[$postType])) {
+            $fields = $fieldConfig[$postType];
+
+            // Check if wildcard means all fields
+            if (in_array('*', $fields, true)) {
+                return null; // null means all fields
+            }
+
+            return $fields;
+        }
+
+        // Default to all native fields if not configured
+        return null;
+    }
+
+    /**
+     * Format post with field filtering.
+     *
+     * @since 1.0.0
+     *
+     * @param \WP_Post $post     Post object.
+     * @param string   $postType Post type.
+     * @return array
+     */
+    protected function formatPostWithFields($post, $postType)
+    {
+        $enabledFields = $this->getEnabledFields($postType);
+
+        // If all fields enabled or not configured, return all
+        if ($enabledFields === null) {
+            return $this->formatter->formatPost($post);
+        }
+
+        return $this->formatter->formatPost($post, 'view', $enabledFields);
+    }
+
+    /**
      * Get items collection.
      *
      * @since 1.0.0
@@ -104,7 +152,7 @@ class PostController
         $items = array();
 
         foreach ($query->posts as $post) {
-            $items[] = $this->formatter->formatPost($post);
+            $items[] = $this->formatPostWithFields($post, $postType);
         }
 
         $response = $this->formatter->collection(
@@ -136,7 +184,7 @@ class PostController
             return $this->formatter->notFoundError('Post');
         }
 
-        $data = $this->formatter->formatPost($post);
+        $data = $this->formatPostWithFields($post, $postType);
 
         return rest_ensure_response($this->formatter->item($data));
     }
@@ -192,7 +240,7 @@ class PostController
         }
 
         $post = get_post($postId);
-        $data = $this->formatter->formatPost($post);
+        $data = $this->formatPostWithFields($post, $postType);
 
         $this->logger->info('Post created', array(
             'post_id' => $postId,
@@ -269,7 +317,7 @@ class PostController
         }
 
         $post = get_post($id);
-        $data = $this->formatter->formatPost($post);
+        $data = $this->formatPostWithFields($post, $postType);
 
         $this->logger->info('Post updated', array(
             'post_id' => $id,
@@ -310,7 +358,7 @@ class PostController
             );
         }
 
-        $data = $this->formatter->formatPost($post);
+        $data = $this->formatPostWithFields($post, $postType);
 
         $this->logger->info('Post deleted', array(
             'post_id' => $id,
